@@ -1,0 +1,55 @@
+{
+  "path": [
+    {
+      "id": "1",
+      "type": "Person",
+      "name": "John Smith",
+      "source": "FourBridge",
+      "confidence": 0.9,
+      "isFourBridge": true,
+      "sharedFirm": false
+    },
+    {
+      "type": "WORKS_WITH",
+      "strength": 0.8,
+      "direction": "OUT",
+      "properties": {
+        "strength": 0.8,
+        "mutualConnections": 3
+      }
+    },
+    {
+      "id": "2",
+      "type": "Person",
+      "name": "Jane Doe",
+      "source": "LinkedIn",
+      "confidence": 0.85,
+      "isFourBridge": false,
+      "sharedFirm": true
+    },
+    {
+      "type": "WORKS_AT",
+      "strength": 0.9,
+      "direction": "IN",
+      "properties": {
+        "strength": 0.9,
+        "title": "Partner"
+      }
+    },
+    {
+      "id": "3",
+      "type": "Firm",
+      "name": "Target Firm",
+      "source": "Firecrawl",
+      "confidence": 0.95,
+      "isFourBridge": false,
+      "sharedFirm": false
+    }
+  ],
+  "score": 0.85,
+  "metadata": {
+    "pathLength": 2,
+    "connectionTypes": ["WORKS_WITH", "WORKS_AT"],
+    "mutualTies": ["Target Firm"]
+  }
+} 
