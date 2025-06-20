@@ -168,4 +168,69 @@ Respond with only the number (1-${profiles.length}) or "none" if none seem corre
     console.error(`[LLMExpander] Error disambiguating profiles: ${error.message}`);
     return 0; // Return first profile as fallback
   }
+}
+
+/**
+ * Uses GPT to guess a likely job title for a person based on their name and company.
+ * 
+ * @param name - The person's name
+ * @param company - The company they work for
+ * @returns Promise resolving to a suggested job title or null
+ */
+export async function enrichContactTitle(
+  name: string,
+  company?: string
+): Promise<string | null> {
+  console.log(`[LLMExpander] Enriching title for: "${name}"${company ? ` at ${company}` : ''}`);
+
+  if (!process.env.OPENAI_API_KEY) {
+    console.warn('[LLMExpander] OPENAI_API_KEY not found. Skipping title enrichment.');
+    return null;
+  }
+
+  const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+  });
+
+  try {
+    const prompt = `Given this person: ${name}${company ? ` at ${company}` : ''}
+
+Please suggest a likely job title for this person. Consider:
+- Common roles in investment firms, venture capital, or private equity
+- Seniority level based on context
+- Industry-specific titles
+
+Respond with only the job title (e.g., "Managing Director", "Partner", "Principal") or "unknown" if you can't make a reasonable guess.
+
+Keep it concise and professional.`;
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      messages: [
+        {
+          role: "system",
+          content: "You are an expert at identifying job titles in the investment and business world. Respond with only the title or 'unknown'."
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
+      temperature: 0.3,
+      max_tokens: 20
+    });
+
+    const response = completion.choices[0]?.message?.content?.trim();
+    if (!response || response.toLowerCase() === 'unknown') {
+      console.log(`[LLMExpander] Could not enrich title for "${name}"`);
+      return null;
+    }
+
+    console.log(`[LLMExpander] Enriched title for "${name}": ${response}`);
+    return response;
+
+  } catch (error: any) {
+    console.error(`[LLMExpander] Error enriching title: ${error.message}`);
+    return null;
+  }
 } 

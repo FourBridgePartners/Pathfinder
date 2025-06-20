@@ -18,7 +18,13 @@ interface FirecrawlConfig {
 }
 
 interface FirecrawlSearchResponse {
-  urls: string[];
+  web: {
+    results: Array<{
+      url: string;
+      title?: string;
+      description?: string;
+    }>;
+  };
 }
 
 interface FirecrawlCrawlResponse {
@@ -257,10 +263,10 @@ async function fetchUrls(config: { apiKey: string, entityName?: string }): Promi
     
     console.log('[FirecrawlFetch] Search response received:', {
       status: response.status,
-      urlsFound: response.data.urls?.length || 0
+      urlsFound: response.data.web.results?.length || 0
     });
     
-    return response.data.urls;
+    return response.data.web.results.map((result: any) => result.url);
   } catch (error) {
     if (axios.isAxiosError(error)) {
       console.error('[FirecrawlFetch] Error fetching URLs:', {
@@ -324,36 +330,47 @@ async function crawlUrl(url: string, apiKey: string): Promise<FirecrawlCrawlResp
 export async function fetchFromFirecrawl(
   config: Partial<FirecrawlConfig>
 ): Promise<FetchResult> {
-  // Use provided config or fall back to env vars
   const firecrawlConfig: FirecrawlConfig = {
-    apiKey: config?.apiKey || process.env.FIRECRAWL_API_KEY || '',
-    entityName: config?.entityName,
-    url: config?.url,
-    debug: config?.debug || false,
-    maxRetries: config?.maxRetries ?? 3,
-    maxConcurrent: config?.maxConcurrent ?? 2,
+    apiKey: config.apiKey || process.env.FIRECRAWL_API_KEY || '',
+    entityName: config.entityName,
+    url: config.url,
+    debug: config.debug || false,
+    maxRetries: config.maxRetries || 3,
+    maxConcurrent: config.maxConcurrent || 5
   };
-  
-  // Validate config
+
   if (!firecrawlConfig.apiKey) {
-    throw new Error('Missing Firecrawl API key');
+    throw new Error('Firecrawl API key is required');
   }
-  if (!firecrawlConfig.entityName && !firecrawlConfig.url) {
-    throw new Error('Missing entity name to search for or a URL to crawl');
-  }
-  
+
   let urls: string[] = [];
 
+  // If a specific URL is provided, use it directly
   if (firecrawlConfig.url) {
-    console.log(`[FirecrawlFetch] Crawling single URL: "${firecrawlConfig.url}"`);
     urls = [firecrawlConfig.url];
+    if (firecrawlConfig.debug) console.log(`[FirecrawlFetch] Using provided URL: ${firecrawlConfig.url}`);
   } else if (firecrawlConfig.entityName) {
-    console.log(`[FirecrawlFetch] Searching for "${firecrawlConfig.entityName}"`);
-    // Fetch URLs with retry
-    urls = await retryWithBackoff(
-      () => fetchUrls({ apiKey: firecrawlConfig.apiKey, entityName: firecrawlConfig.entityName }),
-      firecrawlConfig.maxRetries ?? 3
-    );
+    // Search for URLs using the entity name
+    if (firecrawlConfig.debug) console.log(`[FirecrawlFetch] Searching for URLs for: ${firecrawlConfig.entityName}`);
+    
+    const searchResult = await searchUrls(firecrawlConfig.entityName, firecrawlConfig.apiKey);
+    if (!searchResult) {
+      return {
+        contacts: [],
+        errors: [{ url: 'search', reason: `No URLs found for "${firecrawlConfig.entityName}" after retries` }],
+        links: [],
+        summary: {
+          entityQueried: firecrawlConfig.entityName || firecrawlConfig.url || '',
+          totalUrlsFetched: 0,
+          successfulNormalizations: 0
+        }
+      };
+    }
+    
+    urls = searchResult.web.results.map((result: any) => result.url).slice(0, 10); // Limit to top 10 results
+    if (firecrawlConfig.debug) console.log(`[FirecrawlFetch] Found ${urls.length} URLs to crawl`);
+  } else {
+    throw new Error('Either entityName or url must be provided');
   }
 
   console.log(`[FirecrawlFetch] Found ${urls.length} relevant URLs`);
@@ -448,7 +465,7 @@ export async function fetchFromFirecrawl(
       // Extract links from the HTML using cheerio
       if (crawlResult.html) {
         const $ = cheerio.load(crawlResult.html);
-        $('a').each((i: number, link: cheerio.Element) => {
+        $('a').each((i: number, link: any) => {
           const href = $(link).attr('href');
           if (href) {
             links.push(href);
@@ -468,7 +485,7 @@ export async function fetchFromFirecrawl(
     if (r.result?.html) {
       const $ = cheerio.load(r.result.html);
       const pageLinks: string[] = [];
-      $('a').each((i: number, link: cheerio.Element) => {
+      $('a').each((i: number, link: any) => {
         const href = $(link).attr('href');
         if (href) {
           pageLinks.push(href);
@@ -547,4 +564,74 @@ export function testWithSampleData(): void {
 // Run the test if this file is executed directly
 if (require.main === module) {
   testWithSampleData();
+}
+
+async function searchUrls(entityName: string, apiKey: string): Promise<FirecrawlSearchResponse | null> {
+  const maxRetries = 3;
+  const baseDelay = 1000; // 1 second base delay
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`[FirecrawlSearch] Attempt ${attempt}/${maxRetries} for "${entityName}"`);
+      
+      const requestBody = {
+        query: entityName,
+        pageOptions: { includeHtml: true }
+      };
+      
+      const response = await axios.post(
+        'https://api.firecrawl.dev/search',
+        requestBody,
+        {
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 30000 // 30 second timeout
+        }
+      );
+
+      const result = response.data;
+      
+      // Guard against undefined or empty results
+      if (!result?.web?.results) {
+        console.warn(`[FirecrawlSearch] No web results in response for "${entityName}"`);
+        if (attempt < maxRetries) {
+          const delay = baseDelay * Math.pow(2, attempt - 1); // Exponential backoff
+          console.log(`[FirecrawlSearch] Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        return null;
+      }
+
+      if (result.web.results.length === 0) {
+        console.warn(`[FirecrawlSearch] No URLs found for "${entityName}"`);
+        if (attempt < maxRetries) {
+          const delay = baseDelay * Math.pow(2, attempt - 1);
+          console.log(`[FirecrawlSearch] Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        return null;
+      }
+
+      console.log(`[FirecrawlSearch] Found ${result.web.results.length} URLs for "${entityName}"`);
+      return result;
+
+    } catch (error: any) {
+      console.error(`[FirecrawlSearch] Attempt ${attempt} failed for "${entityName}":`, error.message);
+      
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt - 1);
+        console.log(`[FirecrawlSearch] Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        console.error(`[FirecrawlSearch] All ${maxRetries} attempts failed for "${entityName}"`);
+        return null;
+      }
+    }
+  }
+
+  return null;
 }

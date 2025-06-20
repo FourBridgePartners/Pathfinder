@@ -19,6 +19,10 @@ export type DiscoveredPersonInsert = {
   discovery_id: string;
   name: string;
   linkedin_url: string;
+  title?: string;
+  page_url?: string;
+  company?: string;
+  discovered_at?: string;
   source: string;
   created_at?: string;
 };

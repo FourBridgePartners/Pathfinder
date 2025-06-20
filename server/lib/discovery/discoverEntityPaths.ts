@@ -24,7 +24,11 @@ export type DiscoveryOptions = {
 export type PersonEntity = {
   name: string;
   linkedinUrl?: string;
+  title?: string;
+  pageUrl?: string;
   source: 'firecrawl' | 'linkedin-api' | 'puppeteer';
+  company?: string;
+  discoveredAt?: string;
 };
 
 export type MutualConnection = {
@@ -58,6 +62,9 @@ export async function discoverEntityPaths(
   const via: ('firecrawl' | 'linkedin-api' | 'puppeteer')[] = [];
   let inputType: 'person' | 'firm' | 'fund' | 'linkedin' = 'person';
   let firecrawlContacts: any[] = [];
+
+  // Initialize GraphConstructor for duplicate checking
+  const graphConstructor = new GraphConstructor();
 
   // 1. Normalize input and detect type
   let normalized = resolveEntityName(input);
@@ -113,7 +120,11 @@ export async function discoverEntityPaths(
           peopleDiscovered.push({
             name: contact.name,
             linkedinUrl: contact.linkedin,
-            source: 'firecrawl'
+            title: contact.title,
+            pageUrl: contact.sourceUrl || teamPageResult.teamPageUrl,
+            source: 'firecrawl',
+            company: resolvedInput,
+            discoveredAt: new Date().toISOString()
           });
         });
         via.push('firecrawl');
@@ -133,10 +144,19 @@ export async function discoverEntityPaths(
     }
     // TODO: LinkedIn search fallback if Firecrawl fails
   } else if (inputType === 'linkedin') {
-    peopleDiscovered.push({ name: normalized, linkedinUrl: input, source: 'linkedin-api' });
+    peopleDiscovered.push({ 
+      name: normalized, 
+      linkedinUrl: input, 
+      source: 'linkedin-api',
+      discoveredAt: new Date().toISOString()
+    });
     via.push('linkedin-api');
   } else {
-    peopleDiscovered.push({ name: normalized, source: 'linkedin-api' });
+    peopleDiscovered.push({ 
+      name: normalized, 
+      source: 'linkedin-api',
+      discoveredAt: new Date().toISOString()
+    });
     via.push('linkedin-api');
   }
 
@@ -144,10 +164,32 @@ export async function discoverEntityPaths(
   const dedupedPeople = Array.from(
     new Map(peopleDiscovered.map(p => [(p.linkedinUrl || p.name).toLowerCase(), p])).values()
   );
-  // TODO: Skip people already processed (by ID or LinkedIn URL hash)
-  // TODO: Enrich PersonEntity with work history, bio/title, and source page URL (for Firecrawl results)
+  
+  // Skip people already processed (by LinkedIn URL hash)
+  const filteredPeople = [];
+  for (const person of dedupedPeople) {
+    if (person.linkedinUrl) {
+      // Check if this LinkedIn URL has already been processed
+      try {
+        const existingPerson = await graphConstructor.neo4j.findNodeByProperty('Person', 'linkedinUrl', person.linkedinUrl);
+        if (existingPerson) {
+          if (options.debug) console.log(`[Discovery] Skipping already processed person: ${person.name} (${person.linkedinUrl})`);
+          continue;
+        }
+      } catch (error) {
+        // If query fails, continue with the person
+        if (options.debug) console.warn(`[Discovery] Error checking existing person: ${error}`);
+      }
+    }
+    filteredPeople.push(person);
+  }
+  
+  if (options.debug) {
+    console.log(`[Discovery] Deduplicated ${peopleDiscovered.length} people to ${dedupedPeople.length}`);
+    console.log(`[Discovery] After filtering previously processed: ${filteredPeople.length} people`);
+  }
 
-  // 4. For each person, fetch mutuals with FourBridge members
+  // 4. For each person, fetch mutuals with FourBridge members (with parallel processing)
   // If oauthService is provided, use it for LinkedIn API mutuals
   let mutualFetcher: MutualConnectionFetcher | null = null;
   if (oauthService) {
@@ -163,42 +205,53 @@ export async function discoverEntityPaths(
     const metrics = {
       inputType,
       methods: Array.from(new Set(via)),
-      totalPeople: dedupedPeople.length,
+      totalPeople: filteredPeople.length,
       totalMutuals: 0,
       durationMs
     };
     const summary = {
-      totalPeople: dedupedPeople.length,
+      totalPeople: filteredPeople.length,
       totalMutuals: 0,
       via: Array.from(new Set(via)),
       durationMs
     };
     errors.push('No MutualConnectionFetcher or Puppeteer fallback available, skipping mutual discovery');
-    return { peopleDiscovered: dedupedPeople, mutuals: [], summary, errors, metrics };
+    return { peopleDiscovered: filteredPeople, mutuals: [], summary, errors, metrics };
   }
 
-  for (const person of dedupedPeople) {
+  // Process people in parallel with throttling to avoid rate limits
+  const processPerson = async (person: PersonEntity, index: number) => {
+    // Add delay between requests to avoid rate limiting
+    if (index > 0) {
+      await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
+    }
+
     if (!person.linkedinUrl) {
       errors.push(`No LinkedIn URL for ${person.name}, skipping mutuals`);
-      continue;
+      return null;
     }
+
     let foundMutuals = false;
+    let personMutuals: MutualConnection | null = null;
+
+    // Try LinkedIn API first
     if (mutualFetcher) {
       try {
-        // Try LinkedIn API first
         const apiMutuals = await mutualFetcher.findMutualConnections(person.linkedinUrl, { debug: options.debug });
         if (apiMutuals && apiMutuals.length > 0) {
-          mutuals.push({
+          personMutuals = {
             person,
             mutuals: apiMutuals.map(m => ({
               name: m.name,
               linkedinUrl: m.profileUrl,
-              source: 'linkedin-api'
+              source: 'linkedin-api',
+              discoveredAt: new Date().toISOString()
             })),
             via: 'linkedin-api'
-          });
+          };
           via.push('linkedin-api');
           foundMutuals = true;
+          
           // Write to Neo4j if enabled
           if (options.writeToGraph) {
             const graphConstructor = new GraphConstructor();
@@ -210,29 +263,34 @@ export async function discoverEntityPaths(
         if (options.debug) console.warn(`[Discovery] Failed to fetch mutuals for ${person.name}`);
       }
     }
+
     // Puppeteer fallback if enabled and no API mutuals found
     if (!foundMutuals && options.usePuppeteerFallback) {
       try {
         const puppeteerFetcher = new PuppeteerConnectionFetcher({ headless: true });
         const fbMembers = getFourBridgeMembers();
+        
         for (const member of fbMembers) {
           const puppeteerMutuals = await puppeteerFetcher.fetchMutualConnections(person.linkedinUrl, member);
           if (puppeteerMutuals && puppeteerMutuals.length > 0) {
-            mutuals.push({
+            personMutuals = {
               person,
               mutuals: puppeteerMutuals.map(m => ({
                 name: m.name,
                 linkedinUrl: m.profileUrl,
-                source: 'puppeteer'
+                source: 'puppeteer',
+                discoveredAt: new Date().toISOString()
               })),
               via: 'puppeteer'
-            });
+            };
             via.push('puppeteer');
+            
             // Write to Neo4j if enabled
             if (options.writeToGraph) {
               const graphConstructor = new GraphConstructor();
               await graphConstructor.addPuppeteerMutualConnectionsToGraph(person.linkedinUrl, puppeteerMutuals, { debug: options.debug });
             }
+            break; // Found mutuals, no need to check other members
           }
         }
         await puppeteerFetcher.close();
@@ -241,14 +299,23 @@ export async function discoverEntityPaths(
         if (options.debug) console.warn(`[Discovery] Puppeteer fallback failed for ${person.name}`);
       }
     }
-  }
+
+    return personMutuals;
+  };
+
+  // Process people in parallel with throttling
+  const mutualPromises = filteredPeople.map((person, index) => processPerson(person, index));
+  const mutualResults = await Promise.all(mutualPromises);
+  
+  // Filter out null results and add to mutuals array
+  mutuals.push(...mutualResults.filter((result): result is MutualConnection => result !== null));
 
   // 5. Track metrics
   const durationMs = Date.now() - start;
   const metrics = {
     inputType,
     methods: Array.from(new Set(via)),
-    totalPeople: dedupedPeople.length,
+    totalPeople: filteredPeople.length,
     totalMutuals: mutuals.reduce((acc, m) => acc + (m.mutuals?.length || 0), 0),
     durationMs
   };
@@ -259,14 +326,14 @@ export async function discoverEntityPaths(
 
   // 6. Build summary
   const summary = {
-    totalPeople: dedupedPeople.length,
+    totalPeople: filteredPeople.length,
     totalMutuals: mutuals.reduce((acc, m) => acc + (m.mutuals?.length || 0), 0),
     via: Array.from(new Set(via)),
     durationMs
   };
 
   const result = {
-    peopleDiscovered: dedupedPeople,
+    peopleDiscovered: filteredPeople,
     mutuals,
     summary,
     errors,
@@ -279,11 +346,11 @@ export async function discoverEntityPaths(
       input,
       inputType: inputType,
       methods: Array.from(new Set(via)),
-      totalPeople: dedupedPeople.length,
+      totalPeople: filteredPeople.length,
       totalMutuals: result.summary.totalMutuals,
       duration: durationMs,
       errors,
-      people: dedupedPeople
+      people: filteredPeople
     });
   } catch (err) {
     // Do not throw, just log

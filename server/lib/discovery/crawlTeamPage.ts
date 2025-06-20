@@ -1,6 +1,6 @@
 import { fetchFromFirecrawl } from '../../../ingestion/firecrawl_webfetch';
 import { findTeamPageUrl } from '../utils/pageParser';
-import { suggestTeamPagePaths } from '../utils/llmExpander';
+import { suggestTeamPagePaths, enrichContactTitle } from '../utils/llmExpander';
 import { resolveLinkedInProfile } from '../linkedin/resolveLinkedInProfile';
 import { LPContact } from '../../../types';
 
@@ -167,6 +167,52 @@ export async function crawlTeamPage(
             
           } catch (error: any) {
             console.warn(`[Fallback] Failed to resolve LinkedIn for "${contact.name}": ${error.message}`);
+          }
+        }
+      }
+    }
+
+    // Step 5: LLM Enrichment for Missing Metadata
+    if (result.contacts.length > 0 && enableLLMFallbacks) {
+      const contactsNeedingEnrichment = result.contacts.filter(contact => 
+        !contact.title || !contact.linkedin
+      );
+      
+      if (contactsNeedingEnrichment.length > 0) {
+        console.log(`[Fallback] LLM enrichment triggered for ${contactsNeedingEnrichment.length} contacts`);
+        result.summary.fallbacksUsed.push('llm_enrichment');
+        
+        for (const contact of contactsNeedingEnrichment) {
+          try {
+            // Enrich title if missing
+            if (!contact.title && contact.name) {
+              const enrichedTitle = await enrichContactTitle(contact.name, companyName);
+              if (enrichedTitle) {
+                contact.title = enrichedTitle;
+                console.log(`[Fallback] Enriched title for "${contact.name}": ${enrichedTitle}`);
+              }
+            }
+            
+            // Try LinkedIn resolution again with enriched title
+            if (!contact.linkedin && contact.name) {
+              const profileResult = await resolveLinkedInProfile(
+                contact.name,
+                companyName || undefined,
+                contact.title || undefined
+              );
+              
+              if (profileResult.linkedinUrl && profileResult.confidence !== 'low') {
+                contact.linkedin = profileResult.linkedinUrl;
+                result.summary.linkedinProfilesResolved++;
+                console.log(`[Fallback] Resolved LinkedIn after enrichment for "${contact.name}": ${profileResult.linkedinUrl}`);
+              }
+            }
+            
+            // Add delay to avoid rate limiting
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            
+          } catch (error: any) {
+            console.warn(`[Fallback] Failed to enrich contact "${contact.name}": ${error.message}`);
           }
         }
       }

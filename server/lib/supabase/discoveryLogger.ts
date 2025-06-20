@@ -8,7 +8,15 @@ export interface LogDiscoveryRunArgs {
   totalMutuals: number;
   duration: number;
   errors: string[];
-  people: { name: string; linkedinUrl?: string; source: string }[];
+  people: { 
+    name: string; 
+    linkedinUrl?: string; 
+    title?: string;
+    pageUrl?: string;
+    company?: string;
+    discoveredAt?: string;
+    source: string 
+  }[];
 }
 
 export async function logDiscoveryRun({ input, inputType, methods, totalPeople, totalMutuals, duration, errors, people }: LogDiscoveryRunArgs) {
@@ -29,6 +37,10 @@ export async function logDiscoveryRun({ input, inputType, methods, totalPeople, 
           discovery_id: discoveryId,
           name: person.name,
           linkedin_url: person.linkedinUrl || '',
+          title: person.title || '',
+          page_url: person.pageUrl || '',
+          company: person.company || '',
+          discovered_at: person.discoveredAt || new Date().toISOString(),
           source: person.source
         });
       }

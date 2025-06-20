@@ -1,0 +1,22 @@
+# ===== AI & SEARCH ENGINE FEATURES =====
+
+# Brave Search API - Primary search engine for homepage discovery
+# Get your key at: https://api.search.brave.com/
+BRAVE_API_KEY=your_brave_key_here
+
+# Google Custom Search Engine - Fallback search engine
+# Get your key at: https://developers.google.com/custom-search/v1/overview
+GOOGLE_CSE_API_KEY=your_google_api_key_here
+GOOGLE_CSE_ID=your_google_cse_id_here
+
+# OpenAI API Key - Required for embeddings, GPT expansion, and LLM fallbacks
+# Get your key at: https://platform.openai.com/
+OPENAI_API_KEY=your_openai_key_here
+
+# LinkedIn OAuth - Required for mutual connection discovery
+# Get your keys at: https://www.linkedin.com/developers/
+LINKEDIN_CLIENT_ID=your_linkedin_client_id_here
+LINKEDIN_CLIENT_SECRET=your_linkedin_client_secret_here
+
+# Supabase Anonymous Key - Required for client-side operations
+SUPABASE_ANON_KEY=your_supabase_anon_key_here 
