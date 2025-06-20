@@ -9,6 +9,10 @@ import { PuppeteerConnectionFetcher } from '../../lib/linkedin/PuppeteerConnecti
 import { getFourBridgeMembers } from '../../lib/linkedin/memberHelper';
 import { logDiscoveryRun } from '../supabase/discoveryLogger';
 import { LinkedInOAuthService } from '../../api/linkedin/oauth'; // Assume this exists for production
+import { resolveFirmAlias } from '../alias/firmAliasResolver';
+import { expandFirmQuery } from '../alias/gptEntityExpander';
+import { getHomepageForEntity } from '../alias/searchEngine';
+import { crawlTeamPage } from './crawlTeamPage';
 
 export type DiscoveryOptions = {
   usePuppeteerFallback?: boolean;
@@ -65,28 +69,67 @@ export async function discoverEntityPaths(
     inputType = 'firm';
   }
 
+  // >> NEW: ALIAS RESOLUTION STAGE
+  let resolvedInput = normalized;
+  if (inputType === 'firm' || inputType === 'fund') {
+    const aliasMatch = await resolveFirmAlias(normalized);
+    if (aliasMatch) {
+      resolvedInput = aliasMatch;
+    } else {
+      // As a fallback, use GPT to expand the query
+      const expanded = await expandFirmQuery(normalized);
+      resolvedInput = expanded;
+    }
+    if (options.debug) console.log(`[Resolver] Input "${input}" resolved to "${resolvedInput}"`);
+  }
+  // << END NEW
+
   // 2. Resolve entities (people)
   if (inputType === 'firm' || inputType === 'fund') {
     try {
-      const firecrawlResult = await fetchFromFirecrawl({
-        entityName: normalized,
-        apiKey: process.env.FIRECRAWL_API_KEY || '',
+      // --- Stage 1: Find Homepage (with Brave + Google fallback) ---
+      const homepageUrl = await getHomepageForEntity(resolvedInput);
+      if (!homepageUrl) {
+        throw new Error(`Could not find a homepage for "${resolvedInput}" via any search engine.`);
+      }
+
+      // --- Stage 2: Crawl Homepage and Extract Team Members (with all fallbacks) ---
+      if (options.debug) console.log(`[Discovery] Crawling homepage ${homepageUrl} with fallback mechanisms...`);
+      const teamPageResult = await crawlTeamPage(homepageUrl, {
         debug: options.debug,
-        useStructuredBlocks: true
+        apiKey: process.env.FIRECRAWL_API_KEY || '',
+        companyName: resolvedInput,
+        enableLinkedInResolution: true,
+        enableLLMFallbacks: true
       });
-      firecrawlContacts = firecrawlResult.contacts || [];
-      firecrawlContacts.forEach((contact: any) => {
-        peopleDiscovered.push({
-          name: contact.name,
-          linkedinUrl: contact.linkedin,
-          source: 'firecrawl'
+
+      if (teamPageResult.errors.length > 0) {
+        errors.push(...teamPageResult.errors);
+      }
+
+      if (teamPageResult.contacts.length > 0) {
+        firecrawlContacts = teamPageResult.contacts;
+        firecrawlContacts.forEach((contact: any) => {
+          peopleDiscovered.push({
+            name: contact.name,
+            linkedinUrl: contact.linkedin,
+            source: 'firecrawl'
+          });
         });
-      });
-      via.push('firecrawl');
-      if (options.debug) console.log(`[Discovery] Firecrawl found ${firecrawlContacts.length} contacts`);
+        via.push('firecrawl');
+        
+        if (options.debug) {
+          console.log(`[Discovery] Successfully extracted ${firecrawlContacts.length} team members.`);
+          console.log(`[Discovery] Fallbacks used: ${teamPageResult.summary.fallbacksUsed.join(', ')}`);
+          console.log(`[Discovery] LinkedIn profiles resolved: ${teamPageResult.summary.linkedinProfilesResolved}`);
+        }
+      } else {
+        throw new Error(`No team members found for "${resolvedInput}" after all fallback attempts.`);
+      }
+
     } catch (err: any) {
-      errors.push(`Firecrawl error: ${err.message}`);
-      if (options.debug) console.warn('[Discovery] Firecrawl failed, skipping team discovery');
+      errors.push(`Discovery error for "${resolvedInput}": ${err.message}`);
+      if (options.debug) console.warn(`[Discovery] Pipeline failed for "${resolvedInput}", skipping team discovery.`);
     }
     // TODO: LinkedIn search fallback if Firecrawl fails
   } else if (inputType === 'linkedin') {

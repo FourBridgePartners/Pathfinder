@@ -21,7 +21,7 @@ export function usePathways() {
     setError(null);
     setData(null);
     try {
-      const res = await fetch(`/api/pathways?target=${encodeURIComponent(target)}`);
+      const res = await fetch(`http://localhost:3001/api/pathways?target=${encodeURIComponent(target)}`);
       if (!res.ok) {
         const err = await res.json();
         setError(err.error || 'Unknown error');
@@ -29,7 +29,7 @@ export function usePathways() {
         return;
       }
       const results = await res.json();
-      setData(results);
+      setData(results.data || results); // Handle both formats
     } catch (err: any) {
       setError(err.message || 'Network error');
     } finally {

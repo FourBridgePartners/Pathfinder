@@ -1,5 +1,6 @@
 import axios from 'axios';
 import dotenv from 'dotenv';
+import * as cheerio from 'cheerio';
 import { LPContact } from '../types';
 import { normalizeRow } from '../normalization/normalizeRow';
 import { preprocessRecord } from '../normalization/utils/preprocessRecord';
@@ -9,11 +10,11 @@ dotenv.config();
 
 interface FirecrawlConfig {
   apiKey: string;
-  entityName: string;
+  entityName?: string; // Name to search for
+  url?: string; // Specific URL to crawl
   debug?: boolean;
   maxRetries?: number;
   maxConcurrent?: number;
-  useStructuredBlocks?: boolean;
 }
 
 interface FirecrawlSearchResponse {
@@ -22,6 +23,7 @@ interface FirecrawlSearchResponse {
 
 interface FirecrawlCrawlResponse {
   url: string;
+  html?: string; // Expecting HTML to parse links
   metadata: {
     title: string;
     description?: string;
@@ -37,6 +39,7 @@ interface FirecrawlCrawlResponse {
 interface FetchResult {
   contacts: LPContact[];
   errors: { url: string; reason: string }[];
+  links: string[]; // Return extracted links
   summary: {
     entityQueried: string;
     totalUrlsFetched: number;
@@ -132,8 +135,7 @@ async function processUrlsInParallel(
  */
 function extractStructuredData(
   docText: string,
-  structuredBlocks?: Array<{ type: string; content: string }>,
-  useStructuredBlocks: boolean = false
+  structuredBlocks?: Array<{ type: string; content: string }>
 ): Record<string, string> {
   const structuredData: Record<string, string> = {};
   
@@ -177,7 +179,7 @@ function extractStructuredData(
   structuredData['Notes'] = docText.substring(0, 1000); // Limit to first 1000 chars
   
   // Process structured blocks if enabled and available
-  if (useStructuredBlocks && structuredBlocks?.length) {
+  if (structuredBlocks?.length) {
     structuredBlocks.forEach(block => {
       if (block.type === 'paragraph' || block.type === 'list') {
         // Extract data from the block
@@ -231,14 +233,20 @@ function extractFromBlock(content: string): Record<string, string> {
 /**
  * Fetch URLs from Firecrawl's search endpoint
  */
-async function fetchUrls(config: FirecrawlConfig): Promise<string[]> {
+async function fetchUrls(config: { apiKey: string, entityName?: string }): Promise<string[]> {
   try {
+    const requestBody = {
+      query: config.entityName
+    };
+    
+    console.log('[FirecrawlFetch] Sending search request to Firecrawl:');
+    console.log('[FirecrawlFetch] URL: https://api.firecrawl.dev/v1/search');
+    console.log('[FirecrawlFetch] Body:', JSON.stringify(requestBody, null, 2));
+    console.log('[FirecrawlFetch] API Key:', config.apiKey ? '✓ Present' : '✗ Missing');
+    
     const response = await axios.post<FirecrawlSearchResponse>(
       'https://api.firecrawl.dev/v1/search',
-      {
-        query: config.entityName,
-        numResults: 5
-      },
+      requestBody,
       {
         headers: {
           'Authorization': `Bearer ${config.apiKey}`,
@@ -247,10 +255,20 @@ async function fetchUrls(config: FirecrawlConfig): Promise<string[]> {
       }
     );
     
+    console.log('[FirecrawlFetch] Search response received:', {
+      status: response.status,
+      urlsFound: response.data.urls?.length || 0
+    });
+    
     return response.data.urls;
   } catch (error) {
     if (axios.isAxiosError(error)) {
-      console.error('[FirecrawlFetch] Error fetching URLs:', error.response?.data || error.message);
+      console.error('[FirecrawlFetch] Error fetching URLs:', {
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        message: error.message
+      });
     } else {
       console.error('[FirecrawlFetch] Unexpected error:', error instanceof Error ? error.message : String(error));
     }
@@ -263,12 +281,17 @@ async function fetchUrls(config: FirecrawlConfig): Promise<string[]> {
  */
 async function crawlUrl(url: string, apiKey: string): Promise<FirecrawlCrawlResponse> {
   try {
+    const requestBody = {
+      url,
+      pageOptions: { includeHtml: true }, // Explicitly request HTML
+    };
+    
+    console.log(`[FirecrawlFetch] Crawling URL: ${url}`);
+    console.log('[FirecrawlFetch] Crawl request body:', JSON.stringify(requestBody, null, 2));
+    
     const response = await axios.post<FirecrawlCrawlResponse>(
       'https://api.firecrawl.dev/v1/crawl',
-      {
-        url,
-        includeTextContent: true
-      },
+      requestBody,
       {
         headers: {
           'Authorization': `Bearer ${apiKey}`,
@@ -277,10 +300,17 @@ async function crawlUrl(url: string, apiKey: string): Promise<FirecrawlCrawlResp
       }
     );
     
+    console.log(`[FirecrawlFetch] Successfully crawled: ${url}`);
+    
     return response.data;
   } catch (error) {
     if (axios.isAxiosError(error)) {
-      console.error(`[FirecrawlFetch] Error crawling URL ${url}:`, error.response?.data || error.message);
+      console.error(`[FirecrawlFetch] Error crawling URL ${url}:`, {
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        message: error.message
+      });
     } else {
       console.error(`[FirecrawlFetch] Unexpected error crawling ${url}:`, error instanceof Error ? error.message : String(error));
     }
@@ -297,29 +327,51 @@ export async function fetchFromFirecrawl(
   // Use provided config or fall back to env vars
   const firecrawlConfig: FirecrawlConfig = {
     apiKey: config?.apiKey || process.env.FIRECRAWL_API_KEY || '',
-    entityName: config?.entityName || '',
+    entityName: config?.entityName,
+    url: config?.url,
     debug: config?.debug || false,
     maxRetries: config?.maxRetries ?? 3,
     maxConcurrent: config?.maxConcurrent ?? 2,
-    useStructuredBlocks: config?.useStructuredBlocks || false
   };
   
   // Validate config
   if (!firecrawlConfig.apiKey) {
     throw new Error('Missing Firecrawl API key');
   }
-  if (!firecrawlConfig.entityName) {
-    throw new Error('Missing entity name to search for');
+  if (!firecrawlConfig.entityName && !firecrawlConfig.url) {
+    throw new Error('Missing entity name to search for or a URL to crawl');
   }
   
-  console.log(`[FirecrawlFetch] Searching for "${firecrawlConfig.entityName}"`);
-  
-  // Fetch URLs with retry
-  const urls = await retryWithBackoff(
-    () => fetchUrls(firecrawlConfig),
-    firecrawlConfig.maxRetries ?? 3
-  );
+  let urls: string[] = [];
+
+  if (firecrawlConfig.url) {
+    console.log(`[FirecrawlFetch] Crawling single URL: "${firecrawlConfig.url}"`);
+    urls = [firecrawlConfig.url];
+  } else if (firecrawlConfig.entityName) {
+    console.log(`[FirecrawlFetch] Searching for "${firecrawlConfig.entityName}"`);
+    // Fetch URLs with retry
+    urls = await retryWithBackoff(
+      () => fetchUrls({ apiKey: firecrawlConfig.apiKey, entityName: firecrawlConfig.entityName }),
+      firecrawlConfig.maxRetries ?? 3
+    );
+  }
+
   console.log(`[FirecrawlFetch] Found ${urls.length} relevant URLs`);
+  
+  // Guard against no URLs found
+  if (!urls || urls.length === 0) {
+    console.warn(`[FirecrawlFetch] No URLs found for "${firecrawlConfig.entityName}"`);
+    return {
+      contacts: [],
+      errors: [{ url: 'search', reason: `No URLs found for "${firecrawlConfig.entityName}"` }],
+      links: [],
+      summary: {
+        entityQueried: firecrawlConfig.entityName || firecrawlConfig.url || '',
+        totalUrlsFetched: 0,
+        successfulNormalizations: 0
+      }
+    };
+  }
   
   // Process URLs in parallel with rate limiting
   const crawlResults = await processUrlsInParallel(
@@ -333,6 +385,12 @@ export async function fetchFromFirecrawl(
   // Process results
   const contacts: LPContact[] = [];
   const errors: { url: string; reason: string }[] = [];
+  const links: string[] = [];
+  
+  // Guard against missing contacts field
+  if (!crawlResults || !Array.isArray(crawlResults)) {
+    throw new Error("Firecrawl response missing or invalid crawl results");
+  }
   
   for (const { url, result: crawlResult, error } of crawlResults) {
     if (error) {
@@ -354,13 +412,12 @@ export async function fetchFromFirecrawl(
       // Extract structured data
       const structuredData = extractStructuredData(
         crawlResult.textContent,
-        crawlResult.structuredBlocks,
-        firecrawlConfig.useStructuredBlocks
+        crawlResult.structuredBlocks
       );
       
       // Add the entity name as a fallback for name/firm
       if (!structuredData['Name'] && !structuredData['Firm']) {
-        structuredData['Name'] = firecrawlConfig.entityName;
+        structuredData['Name'] = firecrawlConfig.entityName || firecrawlConfig.url || '';
       }
       
       if (firecrawlConfig.debug) {
@@ -372,7 +429,7 @@ export async function fetchFromFirecrawl(
         source: {
           type: 'firecrawl',
           filename: url,
-          sourceName: firecrawlConfig.entityName
+          sourceName: firecrawlConfig.entityName || firecrawlConfig.url || ''
         },
         debug: firecrawlConfig.debug
       });
@@ -387,6 +444,17 @@ export async function fetchFromFirecrawl(
       }
       
       contacts.push(normalizedResult.contact);
+
+      // Extract links from the HTML using cheerio
+      if (crawlResult.html) {
+        const $ = cheerio.load(crawlResult.html);
+        $('a').each((i: number, link: cheerio.Element) => {
+          const href = $(link).attr('href');
+          if (href) {
+            links.push(href);
+          }
+        });
+      }
     } catch (error) {
       errors.push({
         url,
@@ -395,6 +463,22 @@ export async function fetchFromFirecrawl(
     }
   }
   
+  // Consolidate all links from all crawled pages
+  const allLinks = crawlResults.flatMap(r => {
+    if (r.result?.html) {
+      const $ = cheerio.load(r.result.html);
+      const pageLinks: string[] = [];
+      $('a').each((i: number, link: cheerio.Element) => {
+        const href = $(link).attr('href');
+        if (href) {
+          pageLinks.push(href);
+        }
+      });
+      return pageLinks;
+    }
+    return [];
+  });
+
   console.log(`[FirecrawlFetch] Successfully normalized ${contacts.length} contacts`);
   if (errors.length > 0) {
     console.warn(`[FirecrawlFetch] Failed to process ${errors.length} URLs`);
@@ -403,8 +487,9 @@ export async function fetchFromFirecrawl(
   return {
     contacts,
     errors,
+    links: [...new Set(allLinks)], // Return unique links
     summary: {
-      entityQueried: firecrawlConfig.entityName,
+      entityQueried: firecrawlConfig.entityName || firecrawlConfig.url || '',
       totalUrlsFetched: urls.length,
       successfulNormalizations: contacts.length
     }

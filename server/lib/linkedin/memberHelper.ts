@@ -37,6 +37,15 @@ export function getFourBridgeMembers(): FourBridgeMember[] {
     });
   }
 
+  // Tejas
+  if (process.env.LINKEDIN_TEJAS_USERNAME && process.env.LINKEDIN_TEJAS_PASSWORD) {
+    members.push({
+      name: 'Tejas',
+      username: process.env.LINKEDIN_TEJAS_USERNAME,
+      password: process.env.LINKEDIN_TEJAS_PASSWORD
+    });
+  }
+
   return members;
 }
 
@@ -57,7 +66,8 @@ export function getRequiredEnvVars(): string[] {
   return [
     'LINKEDIN_JON_USERNAME', 'LINKEDIN_JON_PASSWORD',
     'LINKEDIN_CHRIS_USERNAME', 'LINKEDIN_CHRIS_PASSWORD',
-    'LINKEDIN_TED_USERNAME', 'LINKEDIN_TED_PASSWORD'
+    'LINKEDIN_TED_USERNAME', 'LINKEDIN_TED_PASSWORD',
+    'LINKEDIN_TEJAS_USERNAME', 'LINKEDIN_TEJAS_PASSWORD'
   ];
 }
 

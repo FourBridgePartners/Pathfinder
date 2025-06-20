@@ -13,7 +13,9 @@
     "demo:linkedin": "tsx scripts/demo-linkedin-oauth.ts",
     "sync:linkedin": "tsx -e \"import('./worker/linkedin/syncLinkedInConnectionsForAllUsers').then(m => m.syncLinkedInConnectionsForAllUsers())\"",
     "test:linkedin": "vitest tests/linkedin/oauth.test.ts",
-    "fallback-crawler": "tsx scripts/runFallbackCrawler.ts"
+    "fallback-crawler": "tsx scripts/runFallbackCrawler.ts",
+    "test:fft": "tsx scripts/test-fft-discovery.ts",
+    "test:discovery": "tsx scripts/test-discovery-pipeline.ts"
   },
   "devDependencies": {
     "@types/csv-parse": "^1.2.2",
@@ -22,6 +24,7 @@
     "@types/node": "^20.11.0",
     "@types/react": "^18.2.55",
     "@types/react-dom": "^18.2.19",
+    "@types/cheerio": "^0.22.35",
     "@types/uuid": "^10.0.0",
     "autoprefixer": "^10.4.17",
     "cypress": "^14.4.1",
@@ -51,6 +54,8 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "string-similarity": "^4.0.4",
+    "cheerio": "^1.0.0-rc.12",
+    "openai": "^4.28.0",
     "uuid": "^11.1.0"
   }
 }

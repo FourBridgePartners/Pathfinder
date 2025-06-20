@@ -31,7 +31,7 @@ export class PuppeteerConnectionFetcher {
 
   constructor(config: PuppeteerConfig = {}) {
     this.config = {
-      headless: true,
+      headless: process.env.NODE_ENV === 'development' ? false : true,
       timeout: 30000,
       userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       viewport: { width: 1920, height: 1080 },
@@ -48,7 +48,11 @@ export class PuppeteerConnectionFetcher {
     }
 
     try {
-      console.log('[PuppeteerFetcher] Launching browser...');
+      console.log(`[PuppeteerFetcher] Launching browser (headless: ${this.config.headless})...`);
+      if (!this.config.headless) {
+        console.log('🌐 Browser window will open - you can watch the LinkedIn login process!');
+      }
+      
       this.browser = await puppeteer.launch({
         headless: this.config.headless,
         args: [
@@ -65,6 +69,7 @@ export class PuppeteerConnectionFetcher {
         ]
       });
 
+      console.log(`[PuppeteerFetcher] Browser launched successfully (headless: ${this.config.headless})`);
       return this.browser;
     } catch (error) {
       console.error('[PuppeteerFetcher] Failed to launch browser:', error);
